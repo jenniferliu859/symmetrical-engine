@@ -69,9 +69,11 @@ export const collator = new Intl.Collator(undefined, {
 
 // ---------- parsing ----------
 
-// A URL runs until whitespace/quote/bracket OR the start of another URL glued on
+// A URL runs until whitespace/double-quote/bracket OR the start of another URL glued on
 // with no space ("…a.mkvhttps://…"). "=https://" inside a query string is not a split.
-const URL_RE = /https?:\/\/[^\s"'<>]+?(?=(?<!=)https?:\/\/|[\s"'<>]|$)/gi
+// NOTE: the apostrophe is deliberately NOT a terminator — file names such as
+// "Doug's Dog's Date" or "Cookin'" live in the #fragment and must stay intact.
+const URL_RE = /https?:\/\/[^\s"<>]+?(?=(?<!=)https?:\/\/|[\s"<>]|$)/gi
 const HAS_EXT = /\.[A-Za-z0-9]{2,5}$/
 
 const cleanName = (s: string) =>
@@ -151,7 +153,8 @@ export const parseLinks = (input: string): LinkItem[] => {
     const tail = line.slice((hits.at(-1)!.index ?? 0) + hits.at(-1)![0].length)
     const failed = /<--/.test(tail)
     hits.forEach((h, k) => {
-      const url = h[0].replace(/[),;\]]+$/, '')
+      // strip trailing punctuation, incl. a closing single quote from '…' wrapped URLs
+      const url = h[0].replace(/[),;\]']+$/, '')
       let hasQuery: boolean
       try {
         hasQuery = new URL(url).search.length > 1
