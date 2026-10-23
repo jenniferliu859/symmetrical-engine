@@ -603,7 +603,7 @@ export const fmt = (
         )
       if (q.length)
         lines.push(
-          `! printf '%s\\0' ${q.map((x) => dq(x.fn) + ' ' + dq(x.f.url)).join(' ')} | xargs -0 -n 2 -P ${s.workers} sh -c 'wget -q --show-progress -O "$0" "$1"'`,
+          `! printf '%s\\0' ${q.map((x) => dq(x.fn) + ' ' + dq(x.f.url)).join(' ')} | xargs -0 -n 2 -P ${s.workers} sh -c 'wget -O "$0" "$1"'`,
         )
       text = lines.join('\n')
     } else {
