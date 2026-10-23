@@ -65,6 +65,12 @@ const MODES: [CopyMode, string, string][] = [
   ['single', 'One by one', 'A separate cell for every single link'],
 ]
 
+type SortMode = 'none' | 'episode'
+const SORTS: [SortMode, string, string][] = [
+  ['none', 'As pasted', 'Keep the order the links were pasted in'],
+  ['episode', 'By episode', 'Show name → season → episode'],
+]
+
 const LS = {
   input: 'lp_input',
   settings: 'lp_settings',
@@ -72,6 +78,79 @@ const LS = {
   extra: 'lp_extra',
 }
 const NO_COPIES: ReadonlySet<number> = new Set()
+
+// ── Sorting (ported from Magnet Vault) ───────────────────────────────────────
+type Item = ReturnType<typeof parseLinks>[number]
+
+function parseSeasonEpisode(title: string) {
+  if (!title) return null
+  let m = title.match(/s(\d{1,4})[\s._-]*e(\d{1,4})/i)
+  if (m) return { season: parseInt(m[1], 10), episode: parseInt(m[2], 10) }
+  m = title.match(/\b(\d{1,2})x(\d{1,3})\b/i)
+  if (m) return { season: parseInt(m[1], 10), episode: parseInt(m[2], 10) }
+  m = title.match(/\b(?:s|season)[\s._-]*(\d{1,4})(?!\d)/i)
+  if (m) return { season: parseInt(m[1], 10), episode: null as number | null }
+  return null
+}
+
+function stripShowName(title: string) {
+  if (!title) return ''
+  let name = title.replace(/[._]+/g, ' ')
+  // drop a leading release-group tag like "[RARBG]" or "(YIFY)"
+  name = name.replace(/^\s*[[(][^\])]{1,40}[\])]\s*/g, '')
+  const seMatch = name.match(
+    /\b(s\d{1,4}[\s._-]*e\d{1,4}|\d{1,2}x\d{1,4}|(?:s|season)[\s._-]*\d{1,4})(?!\d)/i,
+  )
+  if (seMatch && seMatch.index !== undefined) name = name.slice(0, seMatch.index)
+  // strip qualifiers that sometimes sit directly before the season marker
+  name = name.replace(
+    /\b(complete|repack|proper|extended|uncut|remastered|internal|multi|dual\s*audio)\b/gi,
+    ' ',
+  )
+  // strip a standalone release year
+  name = name.replace(/\b(19|20)\d{2}\b/g, ' ')
+  return name.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+// File name from the URL (or ?filename= param) — used when f.name has no S/E info.
+function nameFromUrl(url: string) {
+  try {
+    const u = new URL(url)
+    const q = u.searchParams.get('filename') || u.searchParams.get('file')
+    if (q) return q
+    const last = u.pathname.split('/').filter(Boolean).pop() || ''
+    return decodeURIComponent(last)
+  } catch {
+    return ''
+  }
+}
+
+// Prefer the item's name, fall back to the URL's file name when the name
+// carries no season/episode info we can use.
+function textForParsing(f: Item) {
+  if (parseSeasonEpisode(f.name)) return f.name
+  return nameFromUrl(f.url) || f.name
+}
+
+function sortByEpisode(arr: Item[]): Item[] {
+  // Parse once per item instead of on every comparison.
+  const keyed = arr.map((f, i) => {
+    const text = textForParsing(f)
+    return { f, i, text, se: parseSeasonEpisode(text), show: stripShowName(text) }
+  })
+  keyed.sort((a, b) => {
+    if (!a.se && !b.se) return a.text.localeCompare(b.text) || a.i - b.i
+    if (!a.se) return 1
+    if (!b.se) return -1
+    const sc = a.show.localeCompare(b.show)
+    if (sc !== 0) return sc
+    if (a.se.season !== b.se.season) return a.se.season - b.se.season
+    const epA = a.se.episode !== null ? a.se.episode : -1
+    const epB = b.se.episode !== null ? b.se.episode : -1
+    return epA - epB || a.i - b.i
+  })
+  return keyed.map((k) => k.f)
+}
 
 // Space-separated words must all match (AND); comma-separated groups are alternatives (OR).
 const searchMatcher = (search: string) => {
@@ -92,6 +171,7 @@ function Home() {
   const [search, setSearch] = useState('')
   const [forceCD, setForceCD] = useState(false)
   const [parts, setParts] = useState(1)
+  const [sortMode, setSortMode] = useState<SortMode>('none')
   const [copiedState, setCopiedState] = useState<{
     key: string
     idx: Set<number>
@@ -115,6 +195,7 @@ function Home() {
         const j = JSON.parse(x)
         setForceCD(!!j.forceCD)
         setParts(Math.max(1, parseInt(j.parts, 10) || 1))
+        setSortMode(j.sortMode === 'episode' ? 'episode' : 'none')
       }
     } catch {
       /* ignore broken storage */
@@ -126,8 +207,11 @@ function Home() {
     localStorage.setItem(LS.input, input)
     localStorage.setItem(LS.settings, JSON.stringify(settings))
     localStorage.setItem(LS.off, JSON.stringify([...off]))
-    localStorage.setItem(LS.extra, JSON.stringify({ forceCD, parts }))
-  }, [ready, input, settings, off, forceCD, parts])
+    localStorage.setItem(
+      LS.extra,
+      JSON.stringify({ forceCD, parts, sortMode }),
+    )
+  }, [ready, input, settings, off, forceCD, parts, sortMode])
 
   const parsed = useMemo(() => parseLinks(input), [input])
   const { items, dupes } = useMemo(() => {
@@ -136,11 +220,14 @@ function Home() {
       : { kept: parsed, dupes: 0 }
     // Force content-disposition: treat every link as "clean" so -O is never used.
     // Done here (not later) so groups and "By group" mode see it too.
-    const kept = forceCD
+    const forced = forceCD
       ? d.kept.map((f) => ({ ...f, hasQuery: false }))
       : d.kept
+    // Sort after dedupe so "keep first" behaviour is unchanged, but before
+    // grouping/splitting so every output cell follows the sorted order.
+    const kept = sortMode === 'episode' ? sortByEpisode(forced) : forced
     return { items: kept, dupes: d.dupes }
-  }, [parsed, settings.dedupe, forceCD])
+  }, [parsed, settings.dedupe, forceCD, sortMode])
   const groups = useMemo(() => buildGroups(items), [items])
 
   const matches = useMemo(() => searchMatcher(search), [search])
@@ -313,6 +400,26 @@ function Home() {
                     className={cn(
                       'px-2 py-2 text-sm font-semibold transition-colors not-first:border-l border-border sm:px-4 sm:py-1.5',
                       settings.mode === k ? 'lp-btn-pri' : 'hover:bg-purple-50',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="mb-4">
+              <div className="mb-1.5 text-xs font-extrabold tracking-widest text-muted-foreground uppercase">
+                Sort links
+              </div>
+              <div className="grid w-full grid-cols-2 overflow-hidden rounded-full border-[1.5px] border-border bg-white sm:inline-grid sm:w-auto">
+                {SORTS.map(([k, label, tip]) => (
+                  <button
+                    key={k}
+                    title={tip}
+                    onClick={() => setSortMode(k)}
+                    className={cn(
+                      'px-2 py-2 text-sm font-semibold transition-colors not-first:border-l border-border sm:px-4 sm:py-1.5',
+                      sortMode === k ? 'lp-btn-pri' : 'hover:bg-purple-50',
                     )}
                   >
                     {label}
