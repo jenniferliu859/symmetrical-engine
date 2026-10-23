@@ -65,7 +65,12 @@ const MODES: [CopyMode, string, string][] = [
   ['single', 'One by one', 'A separate cell for every single link'],
 ]
 
-const LS = { input: 'lp_input', settings: 'lp_settings', off: 'lp_off' }
+const LS = {
+  input: 'lp_input',
+  settings: 'lp_settings',
+  off: 'lp_off',
+  extra: 'lp_extra',
+}
 const NO_COPIES: ReadonlySet<number> = new Set()
 
 // Space-separated words must all match (AND); comma-separated groups are alternatives (OR).
@@ -85,6 +90,8 @@ function Home() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [off, setOff] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
+  const [forceCD, setForceCD] = useState(false)
+  const [parts, setParts] = useState(1)
   const [copiedState, setCopiedState] = useState<{
     key: string
     idx: Set<number>
@@ -99,11 +106,16 @@ function Home() {
     try {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time sync from external storage
       setInput(localStorage.getItem(LS.input) ?? '')
-      setInput(localStorage.getItem(LS.input) ?? '')
       const s = localStorage.getItem(LS.settings)
       if (s) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(s) })
       const o = localStorage.getItem(LS.off)
       if (o) setOff(new Set(JSON.parse(o)))
+      const x = localStorage.getItem(LS.extra)
+      if (x) {
+        const j = JSON.parse(x)
+        setForceCD(!!j.forceCD)
+        setParts(Math.max(1, parseInt(j.parts, 10) || 1))
+      }
     } catch {
       /* ignore broken storage */
     }
@@ -114,14 +126,21 @@ function Home() {
     localStorage.setItem(LS.input, input)
     localStorage.setItem(LS.settings, JSON.stringify(settings))
     localStorage.setItem(LS.off, JSON.stringify([...off]))
-  }, [ready, input, settings, off])
+    localStorage.setItem(LS.extra, JSON.stringify({ forceCD, parts }))
+  }, [ready, input, settings, off, forceCD, parts])
 
   const parsed = useMemo(() => parseLinks(input), [input])
   const { items, dupes } = useMemo(() => {
-    if (!settings.dedupe) return { items: parsed, dupes: 0 }
-    const d = dedupeItems(parsed)
-    return { items: d.kept, dupes: d.dupes }
-  }, [parsed, settings.dedupe])
+    const d = settings.dedupe
+      ? dedupeItems(parsed)
+      : { kept: parsed, dupes: 0 }
+    // Force content-disposition: treat every link as "clean" so -O is never used.
+    // Done here (not later) so groups and "By group" mode see it too.
+    const kept = forceCD
+      ? d.kept.map((f) => ({ ...f, hasQuery: false }))
+      : d.kept
+    return { items: kept, dupes: d.dupes }
+  }, [parsed, settings.dedupe, forceCD])
   const groups = useMemo(() => buildGroups(items), [items])
 
   const matches = useMemo(() => searchMatcher(search), [search])
@@ -130,10 +149,28 @@ function Home() {
     [items, matches],
   )
   const view = useMemo(() => shown.filter((f) => !off.has(f.url)), [shown, off])
-  const cells = useMemo(
-    () => buildCells(view, groups, settings),
-    [view, groups, settings],
-  )
+
+  // Split the selected links evenly, in order, into `parts` commands (50 / 2 = 25 + 25).
+  const cells = useMemo(() => {
+    const n = Math.min(Math.max(1, parts), Math.max(view.length, 1))
+    if (n === 1) return buildCells(view, groups, settings)
+    const out: Cell[] = []
+    for (let p = 0; p < n; p++) {
+      const chunk = view.slice(
+        Math.round((p * view.length) / n),
+        Math.round(((p + 1) * view.length) / n),
+      )
+      if (!chunk.length) continue
+      const built = buildCells(chunk, groups, settings)
+      out.push(
+        ...built.map((c) => ({
+          ...c,
+          label: `Part ${p + 1}/${n} · ${c.label}`,
+        })),
+      )
+    }
+    return out
+  }, [view, groups, settings, parts])
 
   // "Copied" marks belong to one exact output; any change to the cells' text resets them.
   const cellsKey = useMemo(() => cells.map((c) => c.text).join('\0'), [cells])
@@ -330,6 +367,13 @@ function Home() {
                 checked={settings.dedupe}
                 onChange={(v) => set('dedupe', v)}
               />
+              <Toggle
+                label="Force content-disposition"
+                hint="Ignore ?query and never use -O"
+                checked={forceCD}
+                disabled={!settings.commands}
+                onChange={setForceCD}
+              />
               <label className="flex items-center justify-between gap-3">
                 <span className="min-w-0">
                   <span className="block font-bold">Workers</span>
@@ -350,6 +394,24 @@ function Home() {
                         Math.min(64, parseInt(e.target.value, 10) || 1),
                       ),
                     )
+                  }
+                  className="w-16 shrink-0 rounded-full border-[1.5px] border-border bg-white px-3 py-1 text-center text-base outline-none sm:text-sm focus:border-primary"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-3">
+                <span className="min-w-0">
+                  <span className="block font-bold">Split into</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Number of parts (1 = no split)
+                  </span>
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={999}
+                  value={parts}
+                  onChange={(e) =>
+                    setParts(Math.max(1, parseInt(e.target.value, 10) || 1))
                   }
                   className="w-16 shrink-0 rounded-full border-[1.5px] border-border bg-white px-3 py-1 text-center text-base outline-none sm:text-sm focus:border-primary"
                 />
