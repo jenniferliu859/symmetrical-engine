@@ -599,7 +599,7 @@ export const fmt = (
       const lines: string[] = []
       if (nq.length)
         lines.push(
-          `! printf '%s\\0' ${nq.map((x) => dq(x.f.url)).join(' ')} | xargs -0 -n 1 -P ${s.workers} wget -q --show-progress --content-disposition`,
+          `! printf '%s\\0' ${nq.map((x) => dq(x.f.url)).join(' ')} | xargs -0 -n 1 -P ${s.workers} wget --content-disposition`,
         )
       if (q.length)
         lines.push(
