@@ -3,6 +3,8 @@
 
 export type Kind = 'zip' | 'movie' | 'series' | 'other'
 export type CopyMode = 'all' | 'group' | 'single'
+// Command type chooser: "auto" detects per link, the rest force every link into one type.
+export type ForceKind = 'auto' | 'wget' | 'zip' | 'rar' | 'split' | 'plain'
 
 export interface LinkItem {
   id: string
@@ -26,6 +28,7 @@ export interface Settings {
   looseSeriesPlain: boolean
   dedupe: boolean
   mode: CopyMode
+  kind: ForceKind
   workers: number
 }
 
@@ -38,6 +41,7 @@ export const DEFAULT_SETTINGS: Settings = {
   looseSeriesPlain: true,
   dedupe: true,
   mode: 'all',
+  kind: 'auto',
   workers: 15,
 }
 
@@ -479,7 +483,7 @@ export const fmt = (
       ? ns.map((n) => '# ' + n.replace(/\s+/g, ' ').trim()).join('\n') + '\n'
       : ''
 
-  if (!s.commands) {
+  if (!s.commands || s.kind === 'plain') {
     return [
       {
         label: `${members.length} link(s)`,
@@ -498,13 +502,17 @@ export const fmt = (
   const rars: LinkItem[] = []
   const multi = new Map<string, { base: string; parts: LinkItem[] }>()
   const used = new Set<string>()
+  const forced = s.kind !== 'auto'
 
   members.forEach((f) => {
-    if (f.failed || (s.looseSeriesPlain && f.loose)) return void plain.push(f)
-    const k = cmdKind(f)
+    // When a command type is forced, every link goes into that type.
+    if (!forced && (f.failed || (s.looseSeriesPlain && f.loose)))
+      return void plain.push(f)
+    const k = forced ? (s.kind === 'split' ? 'multi' : s.kind) : cmdKind(f)
     if (k === 'multi') {
-      const base = f.name.replace(/\.\d{2,3}$/, '')
-      const b = base.toLowerCase()
+      // forced split: all selected links form ONE archive set, in order
+      const base = (forced ? members[0] : f).name.replace(/\.\d{2,3}$/, '')
+      const b = forced ? '__all__' : base.toLowerCase()
       if (!multi.has(b)) multi.set(b, { base, parts: [] })
       multi.get(b)!.parts.push(f)
     } else if (k === 'zip') zips.push(f)
@@ -520,9 +528,11 @@ export const fmt = (
     const sets = [...multi.entries()]
       .sort((a, b) => collator.compare(a[0], b[0]))
       .map(([, v]) => v)
-    sets.forEach((v) =>
-      v.parts.sort((a, b) => collator.compare(a.name, b.name)),
-    )
+    // forced split keeps the pasted/sorted order; auto sorts parts by name
+    if (!forced)
+      sets.forEach((v) =>
+        v.parts.sort((a, b) => collator.compare(a.name, b.name)),
+      )
     cells.push({
       label: `${sets.length} split archive set(s)`,
       kind: 'split',
