@@ -22,6 +22,7 @@ import {
   parseLinks,
   type Cell,
   type CopyMode,
+  type ForceKind,
   type Kind,
   type Settings,
 } from '@/lib/commands'
@@ -63,6 +64,16 @@ const MODES: [CopyMode, string, string][] = [
   ],
   ['group', 'By group', 'One cell per group — each movie on its own'],
   ['single', 'One by one', 'A separate cell for every single link'],
+]
+
+// Command type chooser: "auto" picks per link; the rest force every selected link into that type.
+const KINDS: [ForceKind, string][] = [
+  ['auto', 'Auto (detect per link)'],
+  ['wget', 'wget (downloads)'],
+  ['zip', 'ZIP (download + extract)'],
+  ['rar', 'RAR (download + extract)'],
+  ['split', 'Split archive (.001, .002…)'],
+  ['plain', 'Plain links (no command)'],
 ]
 
 type SortMode = 'none' | 'episode'
@@ -279,9 +290,14 @@ function Home() {
 
   const copy = async (text: string, what: string) => {
     try {
-      await navigator.clipboard.writeText(
-        text.endsWith('\n') ? text : text + '\n',
-      )
+      // Command cells are copied exactly as shown (no extra blank line when
+      // pasted into Colab). Plain-link output keeps its trailing newline.
+      const out = settings.commands && settings.kind !== 'plain'
+        ? text
+        : text.endsWith('\n')
+          ? text
+          : text + '\n'
+      await navigator.clipboard.writeText(out)
       toast.success(`Copied ${what}`)
       return true
     } catch {
@@ -406,6 +422,27 @@ function Home() {
                   </button>
                 ))}
               </div>
+            </div>
+            <div className="mb-4">
+              <label
+                htmlFor="cmd-kind"
+                className="mb-1.5 block text-xs font-extrabold tracking-widest text-muted-foreground uppercase"
+              >
+                Command type
+              </label>
+              <select
+                id="cmd-kind"
+                value={settings.kind}
+                disabled={!settings.commands}
+                onChange={(e) => set('kind', e.target.value as ForceKind)}
+                className="w-full rounded-full border-[1.5px] border-border bg-white px-4 py-2 text-base outline-none focus:border-primary focus:ring-4 focus:ring-primary/15 disabled:opacity-45 sm:w-auto sm:min-w-64 sm:text-sm"
+              >
+                {KINDS.map(([k, label]) => (
+                  <option key={k} value={k}>
+                    {label}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="mb-4">
               <div className="mb-1.5 text-xs font-extrabold tracking-widest text-muted-foreground uppercase">
